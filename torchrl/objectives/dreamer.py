@@ -181,6 +181,135 @@ class DreamerModelLoss(LossModule):
         return kl
 
 
+class DreamerV2ModelLoss(DreamerModelLoss):
+    """DreamerV2 Model Loss.
+
+    TBD
+
+    Reference: https://arxiv.org/pdf/2010.02193.pdf
+
+    Args:
+        world_model (TensorDictModule): the world model.
+        lambda_kl (float, optional): the weight of the kl divergence loss. Default: 1.0.
+        lambda_reco (float, optional): the weight of the reconstruction loss. Default: 1.0.
+        lambda_reward (float, optional): the weight of the reward loss. Default: 1.0.
+        reco_loss (str, optional): the reconstruction loss. Default: "l2".
+        reward_loss (str, optional): the reward loss. Default: "l2".
+        free_nats (int, optional): the free nats. Default: 3.
+        delayed_clamp (bool, optional): if ``True``, the KL clamping occurs after
+            averaging. If False (default), the kl divergence is clamped to the
+            free nats value first and then averaged.
+        global_average (bool, optional): if ``True``, the losses will be averaged
+            over all dimensions. Otherwise, a sum will be performed over all
+            non-batch/time dimensions and an average over batch and time.
+            Default: False.
+    """
+
+    @dataclass
+    class _AcceptedKeys:
+        """Maintains default values for all configurable tensordict keys.
+
+        This class defines which tensordict keys can be set using '.set_keys(key_name=key_value)' and their
+        default values
+
+        Attributes:
+            reward (NestedKey): The reward is expected to be in the tensordict
+                key ("next", reward). Defaults to ``"reward"``.
+            true_reward (NestedKey): The `true_reward` will be stored in the
+                tensordict key ("next", true_reward). Defaults to ``"true_reward"``.
+            prior_mean (NestedKey): The prior mean is expected to be in the
+                tensordict key ("next", prior_mean). Defaults to ``"prior_mean"``.
+            prior_std (NestedKey): The prior mean is expected to be in the
+                tensordict key ("next", prior_mean). Defaults to ``"prior_mean"``.
+            posterior_mean (NestedKey): The posterior mean is expected to be in
+                the tensordict key ("next", prior_mean). Defaults to ``"posterior_mean"``.
+            posterior_std (NestedKey): The posterior std is expected to be in
+                the tensordict key ("next", prior_mean). Defaults to ``"posterior_std"``.
+            pixels (NestedKey): The pixels is expected to be in the tensordict key ("next", pixels).
+                Defaults to ``"pixels"``.
+            reco_pixels (NestedKey): The reconstruction pixels is expected to be
+                in the tensordict key ("next", reco_pixels). Defaults to ``"reco_pixels"``.
+        """
+
+        reward: NestedKey = "reward"
+        true_reward: NestedKey = "true_reward"
+        prior_mean: NestedKey = "prior_mean"
+        prior_std: NestedKey = "prior_std"
+        posterior_mean: NestedKey = "posterior_mean"
+        posterior_std: NestedKey = "posterior_std"
+        pixels: NestedKey = "pixels"
+        reco_pixels: NestedKey = "reco_pixels"
+
+    default_keys = _AcceptedKeys()
+
+    def __init__(
+        self,
+        world_model: TensorDictModule,
+        *,
+        lambda_reco: float = 1.0,
+        lambda_reward: float = 1.0,
+        reco_loss: Optional[str] = None,
+        reward_loss: Optional[str] = None,
+        free_nats: int = 3,
+        delayed_clamp: bool = False,
+        global_average: bool = False,
+    ):
+        super().__init__(
+            world_model=world_model,
+            lambda_reco=lambda_reco,
+            lambda_reward=lambda_reward,
+            reco_loss=reco_loss,
+            reward_loss=reward_loss,
+            free_nats=free_nats,
+            delayed_clamp=delayed_clamp,
+            global_average=global_average,
+        )
+
+    def forward(self, tensordict: TensorDict) -> torch.Tensor:
+        tensordict = tensordict.clone(recurse=False)
+        tensordict.rename_key_(
+            ("next", self.tensor_keys.reward),
+            ("next", self.tensor_keys.true_reward),
+        )
+        tensordict = self.world_model(tensordict)
+        # compute model loss
+        kl_loss = self.kl_loss(
+            tensordict.get(("next", self.tensor_keys.prior_mean)),
+            tensordict.get(("next", self.tensor_keys.prior_std)),
+            tensordict.get(("next", self.tensor_keys.posterior_mean)),
+            tensordict.get(("next", self.tensor_keys.posterior_std)),
+        ).unsqueeze(-1)
+        reco_loss = distance_loss(
+            tensordict.get(("next", self.tensor_keys.pixels)),
+            tensordict.get(("next", self.tensor_keys.reco_pixels)),
+            self.reco_loss,
+        )
+        if not self.global_average:
+            reco_loss = reco_loss.sum((-3, -2, -1))
+        reco_loss = reco_loss.mean().unsqueeze(-1)
+
+        reward_loss = distance_loss(
+            tensordict.get(("next", self.tensor_keys.true_reward)),
+            tensordict.get(("next", self.tensor_keys.reward)),
+            self.reward_loss,
+        )
+        if not self.global_average:
+            reward_loss = reward_loss.squeeze(-1)
+        reward_loss = reward_loss.mean().unsqueeze(-1)
+        # import ipdb; ipdb.set_trace()
+        return (
+            TensorDict(
+                {
+                    "loss_model_kl": self.lambda_kl * kl_loss,
+                    "loss_model_reco": self.lambda_reco * reco_loss,
+                    "loss_model_reward": self.lambda_reward * reward_loss,
+                },
+                [],
+            ),
+            tensordict.detach(),
+        )
+
+
 class DreamerActorLoss(LossModule):
     """Dreamer Actor Loss.
 

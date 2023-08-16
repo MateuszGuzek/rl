@@ -906,3 +906,107 @@ class DiscreteModelConfig:
     # whether a distributional loss should be used.
     atoms: int = 51
     # number of atoms used for the distributional loss
+
+
+def make_dreamer_v2(
+    cfg: "DictConfig",  # noqa: F821
+    proof_environment: EnvBase = None,
+    device: DEVICE_TYPING = "cpu",
+    action_key: str = "action",
+    value_key: str = "state_value",
+    use_decoder_in_env: bool = False,
+    obs_norm_state_dict=None,
+) -> nn.ModuleList:
+    """Create Dreamer components.
+
+    Args:
+        cfg (DictConfig): Config object.
+        proof_environment (EnvBase): Environment to initialize the model.
+        device (DEVICE_TYPING, optional): Device to use.
+            Defaults to "cpu".
+        action_key (str, optional): Key to use for the action.
+            Defaults to "action".
+        value_key (str, optional): Key to use for the value.
+            Defaults to "state_value".
+        use_decoder_in_env (bool, optional): Whether to use the decoder in the model based dreamer env.
+            Defaults to False.
+        obs_norm_state_dict (dict, optional): the state_dict of the ObservationNorm transform used
+            when proof_environment is missing. Defaults to None.
+
+    Returns:
+        nn.TensorDictModel: Dreamer World model.
+        nn.TensorDictModel: Dreamer Model based environnement.
+        nn.TensorDictModel: Dreamer Actor the world model space.
+        nn.TensorDictModel: Dreamer Value model.
+        nn.TensorDictModel: Dreamer Actor for the real world space.
+
+    """
+    proof_env_is_none = proof_environment is None
+    if proof_env_is_none:
+        proof_environment = transformed_env_constructor(
+            cfg=cfg, use_env_creator=False, obs_norm_state_dict=obs_norm_state_dict
+        )()
+
+    # Modules
+    obs_encoder = ObsEncoder()
+    obs_decoder = ObsDecoder()
+
+    rssm_prior = RSSMPrior(
+        hidden_dim=cfg.rssm_hidden_dim,
+        rnn_hidden_dim=cfg.rssm_hidden_dim,
+        state_dim=cfg.state_dim,
+        action_spec=proof_environment.action_spec,
+    )
+    rssm_posterior = RSSMPosterior(
+        hidden_dim=cfg.rssm_hidden_dim, state_dim=cfg.state_dim
+    )
+    reward_module = MLP(
+        out_features=1, depth=2, num_cells=cfg.mlp_num_units, activation_class=nn.ELU
+    )
+
+    world_model = _dreamer_make_world_model(
+        obs_encoder, obs_decoder, rssm_prior, rssm_posterior, reward_module
+    ).to(device)
+    with torch.no_grad(), set_exploration_type(ExplorationType.RANDOM):
+        tensordict = proof_environment.fake_tensordict().unsqueeze(-1)
+        tensordict = tensordict.to_tensordict().to(device)
+        tensordict = tensordict.to(device)
+        world_model(tensordict)
+
+    model_based_env = _dreamer_make_mbenv(
+        reward_module,
+        rssm_prior,
+        obs_decoder,
+        proof_environment,
+        use_decoder_in_env,
+        cfg.state_dim,
+        cfg.rssm_hidden_dim,
+    )
+    model_based_env = model_based_env.to(device)
+
+    actor_simulator, actor_realworld = _dreamer_make_actors(
+        obs_encoder,
+        rssm_prior,
+        rssm_posterior,
+        cfg.mlp_num_units,
+        action_key,
+        proof_environment,
+    )
+    actor_simulator = actor_simulator.to(device)
+
+    value_model = _dreamer_make_value_model(cfg.mlp_num_units, value_key)
+    value_model = value_model.to(device)
+    with torch.no_grad(), set_exploration_type(ExplorationType.RANDOM):
+        tensordict = model_based_env.fake_tensordict().unsqueeze(-1)
+        tensordict = tensordict.to(device)
+        tensordict = actor_simulator(tensordict)
+        value_model(tensordict)
+
+    actor_realworld = actor_realworld.to(device)
+    if proof_env_is_none:
+        proof_environment.close()
+        torch.cuda.empty_cache()
+        del proof_environment
+
+    del tensordict
+    return world_model, model_based_env, actor_simulator, value_model, actor_realworld
