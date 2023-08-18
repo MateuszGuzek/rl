@@ -258,7 +258,8 @@ class RSSMPrior(nn.Module):
 
     This network takes as input the previous state and belief and the current action.
     It returns the next prior state and belief, as well as the parameters of the prior state distribution.
-    State is by construction stochastic and belief is deterministic. In "Dream to control", these are called "deterministic state " and "stochastic state", respectively.
+    State is by construction stochastic and belief is deterministic. In the "Learning Latent Dynamics" paper,
+    these are called "deterministic state " and "stochastic state", respectively.
 
     Reference: https://arxiv.org/abs/1811.04551
 
