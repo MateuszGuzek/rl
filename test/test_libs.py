@@ -62,6 +62,7 @@ from torchrl.envs.libs.gym import (
 from torchrl.envs.libs.habitat import _has_habitat, HabitatEnv
 from torchrl.envs.libs.jumanji import _has_jumanji, JumanjiEnv
 from torchrl.envs.libs.openml import OpenMLEnv
+from torchrl.envs.libs.robohive import RoboHiveEnv
 from torchrl.envs.libs.vmas import _has_vmas, VmasEnv, VmasWrapper
 from torchrl.envs.utils import check_env_specs, ExplorationType
 from torchrl.envs.vec_env import _has_envpool, MultiThreadedEnvWrapper, SerialEnv
@@ -291,6 +292,25 @@ class TestGym:
         env.reset()
         env.rand_step()
         env.rollout(3)
+
+    @implement_for("gymnasium", "0.27.0", None)
+    def test_one_hot_and_categorical(self):
+        # tests that one-hot and categorical work ok when an integer is expected as action
+        cliff_walking = GymEnv("CliffWalking-v0", categorical_action_encoding=True)
+        cliff_walking.rollout(10)
+        check_env_specs(cliff_walking)
+
+        cliff_walking = GymEnv("CliffWalking-v0", categorical_action_encoding=False)
+        cliff_walking.rollout(10)
+        check_env_specs(cliff_walking)
+
+    @implement_for("gym", None, "0.27.0")
+    def test_one_hot_and_categorical(self):  # noqa: F811
+        # we do not skip (bc we may want to make sure nothing is skipped)
+        # but CliffWalking-v0 in earlier Gym versions uses np.bool, which
+        # was deprecated after np 1.20, and we don't want to install multiple np
+        # versions.
+        return
 
 
 @implement_for("gym", None, "0.26")
@@ -1613,6 +1633,30 @@ class TestIsaacGym:
     #     for c in collector:
     #         assert c.shape == torch.Size([num_envs, 20])
     #         break
+
+
+class TestRoboHive:
+    @pytest.mark.parametrize("envname", RoboHiveEnv.env_list)
+    @pytest.mark.parametrize("from_pixels", [True, False])
+    def test_robohive(self, envname, from_pixels):
+        if any(substr in envname for substr in ("_vr3m", "_vrrl", "_vflat", "_vvc1s")):
+            print("not testing envs with prebuilt rendering")
+            return
+        if "Adroit" in envname:
+            print("tcdm are broken")
+            return
+        try:
+            env = RoboHiveEnv(envname)
+        except AttributeError as err:
+            if "'MjData' object has no attribute 'get_body_xipos'" in str(err):
+                print("tcdm are broken")
+                return
+            else:
+                raise err
+        if from_pixels and len(RoboHiveEnv.get_available_cams(env_name=envname)) == 0:
+            print("no camera")
+            return
+        check_env_specs(env)
 
 
 if __name__ == "__main__":

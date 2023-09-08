@@ -8,11 +8,14 @@ from .env_creator import EnvCreator, get_env_metadata
 from .gym_like import default_info_dict_reader, GymLikeEnv
 from .model_based import ModelBasedEnvBase
 from .transforms import (
+    ActionMask,
     BinarizeReward,
     CatFrames,
     CatTensors,
     CenterCrop,
+    ClipTransform,
     Compose,
+    DeviceCastTransform,
     DiscreteActionProjection,
     DoubleToFloat,
     DTypeCastTransform,
